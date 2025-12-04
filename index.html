@@ -597,8 +597,8 @@
   // ============ GAME LOOP (CORREGIDO) ============
   // ============ GAME LOOP CORREGIDO ============
   function animate() {
-    // ⚠️ ELIMINADO: requestAnimationFrame(animate); 
-    // Ahora renderer.setAnimationLoop se encargará de esto automáticamente.
+    // === NUEVO: Actualizar controles VR (Joystick) ===
+    if (window.updateVRControls) window.updateVRControls();
 
     const dt = clock.getDelta();
     if (mixer) mixer.update(dt);
@@ -743,6 +743,12 @@
   }
 
   function endGame() {
+    // === NUEVO: Salir de VR automáticamente al perder ===
+    if (renderer.xr.isPresenting) {
+      renderer.xr.getSession().end();
+    }
+    // ===================================================
+
     gameStarted = false;
     gameover.style.display = 'grid';
     finalDist.textContent = distance;
@@ -778,46 +784,30 @@
   <script type="module">
     import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/webxr/VRButton.js';
 
-    // 1. Crear el botón VR (oculto visualmente, lo activaremos con el botón del menú)
+    // 1. Configuración VRButton
     const vrBtn = VRButton.createButton(window.renderer);
     vrBtn.style.display = 'none'; 
     document.body.appendChild(vrBtn);
 
-    // 2. Conectar tu botón "Comenzar" del menú HTML
-    // CAMBIO IMPORTANTE: Usamos 'botonInicio' en lugar de 'startBtn' para evitar el error
     const botonInicio = document.getElementById('start-btn');
-    
-    // Guardamos la función original (startGame) que tenía el botón
-    const originalStart = botonInicio.onclick;
-    
-    // Sobrescribimos el clic para que inicie el juego Y entre a VR
     botonInicio.onclick = (e) => {
-        // Ejecutar la lógica original del juego (quitar menú, iniciar música, etc.)
         if (window.startGame) window.startGame();
-        
-        // Intentar entrar a VR automáticamente
         vrBtn.click();
     };
 
-    // Botón fallback para pruebas en PC (opcional)
     const fallbackBtn = document.getElementById('enter-vr-fallback');
     if(fallbackBtn) {
         fallbackBtn.style.display = 'block';
         fallbackBtn.onclick = () => vrBtn.click();
     }
 
-    // 3. Manejo de la Cámara al entrar/salir de VR
+    // 2. Gestión de Sesión (Entrar/Salir)
     window.renderer.xr.addEventListener('sessionstart', () => {
-        // Asegurar que el juego inició si entraron por otro medio
         if (!window.gameStarted && window.startGame) window.startGame();
-
         if (window.player && window.camera) {
-            // A. Poner cámara en primera persona (hija del jugador)
             window.player.add(window.camera);
             window.camera.position.set(0, 0, 0); 
             window.camera.rotation.set(0, 0, 0);
-
-            // B. Ocultar modelo del jugador para no bloquear la vista
             window.player.traverse(obj => {
                 if (obj.isMesh) {
                     obj.userData._origVis = obj.visible;
@@ -828,34 +818,68 @@
     });
 
     window.renderer.xr.addEventListener('sessionend', () => {
+        // Al salir (ya sea por menu o Game Over), restauramos la cámara
         if (window.player && window.camera) {
-            // Restaurar cámara y visibilidad al salir
             window.scene.add(window.camera);
-            
             window.player.traverse(obj => {
                 if (obj.isMesh && obj.userData._origVis !== undefined) {
                     obj.visible = obj.userData._origVis;
                 }
             });
-            
             window.camera.position.set(0, 12, 16);
             window.camera.lookAt(0,0,0);
         }
     });
 
-    // 4. Controles VR (Gatillos para avanzar)
-    const controller1 = window.renderer.xr.getController(0);
-    controller1.addEventListener('selectstart', () => {
-        window.handleMove && window.handleMove('KeyW');
-    });
-    window.scene.add(controller1);
+    // 3. Lógica del Joystick (Control Izquierdo)
+    // Estado para evitar movimiento continuo ultra-rápido
+    let stickCentered = true; 
+    const DEADZONE = 0.5; // Qué tanto hay que mover la palanca
 
-    const controller2 = window.renderer.xr.getController(1);
-    controller2.addEventListener('selectstart', () => {
-        window.handleMove && window.handleMove('KeyW');
-    });
-    window.scene.add(controller2);
+    // Esta función se llama desde el animate() principal gracias a window
+    window.updateVRControls = () => {
+        const session = window.renderer.xr.getSession();
+        if (!session) return;
 
+        let inputSource = null;
+        // Buscar el control IZQUIERDO
+        for (const source of session.inputSources) {
+            if (source.handedness === 'left') {
+                inputSource = source;
+                break;
+            }
+        }
+
+        if (inputSource && inputSource.gamepad) {
+            const gp = inputSource.gamepad;
+            // En Quest, el Joystick suele ser axes[2] (X) y axes[3] (Y)
+            const x = gp.axes[2]; 
+            const y = gp.axes[3]; 
+
+            // Verificar si el joystick volvió al centro
+            if (Math.abs(x) < 0.2 && Math.abs(y) < 0.2) {
+                stickCentered = true;
+                return;
+            }
+
+            // Si el joystick está centrado previamente, permitimos un movimiento
+            if (stickCentered) {
+                if (y < -DEADZONE) { // Arriba (Adelante)
+                    window.handleMove('KeyW');
+                    stickCentered = false;
+                } else if (y > DEADZONE) { // Abajo (Atras)
+                    window.handleMove('KeyS');
+                    stickCentered = false;
+                } else if (x < -DEADZONE) { // Izquierda
+                    window.handleMove('KeyA');
+                    stickCentered = false;
+                } else if (x > DEADZONE) { // Derecha
+                    window.handleMove('KeyD');
+                    stickCentered = false;
+                }
+            }
+        }
+    };
   </script>
 </body>
 </html>
