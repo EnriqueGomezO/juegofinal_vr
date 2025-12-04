@@ -591,39 +591,32 @@
 
   // ============ GAME LOOP ============
   // ============ GAME LOOP (CORREGIDO) ============
+  // ============ GAME LOOP CORREGIDO ============
   function animate() {
-    // NOTA IMPORTANTE: Aquí eliminamos 'requestAnimationFrame(animate)'
-    // porque ahora lo manejará 'renderer.setAnimationLoop' desde init()
+    // ⚠️ ELIMINADO: requestAnimationFrame(animate); 
+    // Ahora renderer.setAnimationLoop se encargará de esto automáticamente.
 
     const dt = clock.getDelta();
-    
-    // 1. Actualizar animaciones del modelo (FBX)
     if (mixer) mixer.update(dt);
 
-    // 2. Lógica de movimiento del Jugador (Interpolación suave)
+    // Lógica de movimiento del jugador
     if (isMoving && player) {
       const elapsed = performance.now() - moveStart;
       const duration = CONFIG.player.speed * 1000;
       const t = Math.min(1, elapsed / duration);
-      
-      // Función de easing para salto suave
       const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
 
       player.position.lerpVectors(moveFrom, moveTo, ease);
-      player.position.y = Math.sin(t * Math.PI) * 0.2; // Arco del salto
-
-      // Rotación suave hacia la dirección del movimiento
+      player.position.y = Math.sin(t * Math.PI) * 0.2;
+      
       if (player.userData.rotAnim) {
         const { start, diff } = player.userData.rotAnim;
         player.rotation.y = start + diff * ease;
       }
 
-      // Al terminar el movimiento
       if (t >= 1) {
         isMoving = false;
         player.position.y = 0;
-        
-        // Volver a animación Idle
         if (animations.idle) {
           if (currentAction !== animations.idle) {
             if (currentAction) currentAction.fadeOut(0.3);
@@ -631,8 +624,6 @@
             currentAction.reset().fadeIn(0.3).play();
           }
         }
-        
-        // Actualizar puntuación si avanzó
         if (moveTo.z < moveFrom.z) {
           distance += 1;
           score += CONFIG.pointsPerMove;
@@ -644,36 +635,28 @@
       }
     }
 
-    // 3. Mover obstáculos (Coches)
+    // Movimiento de coches
     for (const o of obstacles) {
       if (!o.userData || o.userData.type !== 'car') continue;
       const dir = o.userData.dir || 1;
       const speed = o.userData.speed || 2.0;
       o.position.x += dir * speed * dt;
-      
       const maxX = (CONFIG.lanes / 2) * CONFIG.laneWidth + 5;
-      
-      // Resetear posición si sale de pantalla (loop infinito de coches)
       if (o.position.x > maxX) o.position.x = -maxX;
       if (o.position.x < -maxX) o.position.x = maxX;
     }
 
-    // 4. Checar colisiones
     checkCollisions();
 
-    // 5. Lógica de Cámara (IMPORTANTE PARA VR)
-    if (player) {
-      // Si NO estamos en VR, la cámara sigue al jugador suavemente desde arriba
-      if (!renderer.xr.isPresenting) {
+    // 🎥 LÓGICA DE CÁMARA IMPORTANTE
+    // Solo movemos la cámara manualmente si NO estamos en VR.
+    // En VR, la cámara se mueve sola con tu cabeza (porque la haremos hija del jugador).
+    if (player && !renderer.xr.isPresenting) {
         const targetCam = new THREE.Vector3(player.position.x * 0.3, 12, player.position.z + 16);
         camera.position.lerp(targetCam, 0.1);
         camera.lookAt(player.position.x * 0.2, 0, player.position.z - 3);
-      } 
-      // Si estamos en VR, NO movemos la cámara aquí. 
-      // En VR la cámara la mueven las gafas y está pegada al jugador por el código del módulo.
     }
 
-    // 6. Renderizar escena
     renderer.render(scene, camera);
   }
 
@@ -791,103 +774,84 @@
   <script type="module">
     import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/webxr/VRButton.js';
 
-    // create and append VRButton (this will handle native WebXR sessions)
+    // 1. Crear el botón VR (oculto visualmente, lo activaremos con el botón del menú)
     const vrBtn = VRButton.createButton(window.renderer);
+    vrBtn.style.display = 'none'; 
     document.body.appendChild(vrBtn);
 
-    // expose a fallback shortcut button for desktop testing (already in DOM)
-    const fallbackBtn = document.getElementById('enter-vr-fallback');
-    fallbackBtn.style.display = 'block';
-    fallbackBtn.onclick = () => { vrBtn.click(); };
-
-    // When all models loaded, we want to move camera inside player to be first-person
-    // Poll until the 'player' group exists
-    const tryAttachCamera = () => {
-      if (window.player && window.camera) {
-        // Reparent camera to the player group so camera tracks player's position in VR (first person)
-        // Keep a small offset so camera sits at eye height
-        try {
-          camera.position.set(0, 1.6, 0); // eye height in meters
-          player.add(camera);
-        } catch(e){ console.warn('Error attaching camera to player:', e); }
-        // Hide player's visible model when in VR (so you don't see the 3rd-person avatar)
-        // We still keep the model for non-VR gameplay; toggle visibility when the session starts
-        const hidePlayerModelInVR = (isPresenting) => {
-          if (!player) return;
-          player.traverse(obj => {
-            if (obj.isMesh) {
-              // store original visibility in userData if not stored
-              if (obj.userData._origVis === undefined) obj.userData._origVis = obj.visible;
-              obj.visible = isPresenting ? false : obj.userData._origVis;
-            }
-          });
-        };
-
-        // Listen to XR session start / end to hide/show model
-        renderer.xr.addEventListener('sessionstart', () => { hidePlayerModelInVR(true); });
-        renderer.xr.addEventListener('sessionend', () => { hidePlayerModelInVR(false); });
-
-        // Setup simple VR controller actions: select -> forward (simulate KeyW)
-        const controller1 = renderer.xr.getController(0);
-        controller1.addEventListener('selectstart', () => {
-          // move player forward one tile when pressing select
-          // compute forward in world space based on headset direction (camera)
-          if (!player) return;
-          // Use headset direction: camera.getWorldDirection
-          const dir = new THREE.Vector3();
-          camera.getWorldDirection(dir);
-          dir.y = 0;
-          dir.normalize();
-          // snap to grid: determine nearest lane x and z step
-          // Determine intended forward move (one tile in -z local space)
-          // We'll simply attempt to move forward in world z by one tile relative to player's heading
-          // Simpler: trigger same move as KeyW (forward along -z)
-          const event = { code: 'KeyW' };
-          // Call global handleMove with 'KeyW' (already defined)
-          window.handleMove && window.handleMove('KeyW');
-        });
-        scene.add(controller1);
-
-        const controller2 = renderer.xr.getController(1);
-        controller2.addEventListener('selectstart', () => {
-          // secondary controller can be mapped to 'KeyS' (back)
-          window.handleMove && window.handleMove('KeyS');
-        });
-        scene.add(controller2);
-
-        // Replace main animation loop with renderer.setAnimationLoop for compatibility with VR
-        const mainLoop = () => {
-          const dt = clock.getDelta();
-          if (mixer) mixer.update(dt);
-          // we reuse existing animate logic by calling the global animate's core rendering,
-          // but it's simpler to just call renderer.render(scene, camera) because animate already updates game state (requestAnimationFrame still running)
-        };
-        // start VR-friendly animation loop
-        renderer.setAnimationLoop(() => {
-          // call the same per-frame logic as your animate() function does
-          // to avoid duplicating logic, call the original animate's body via a small wrapper:
-          // (we will call the global animate frame rendering logic by invoking renderer.render at the end)
-          // However to keep game logic consistent, call the function that updates the physics and game state:
-          // We'll call the animate() function body by invoking the non-vr rendering flow using requestAnimationFrame style,
-          // But simplest: call the animate() global which already calls renderer.render internally — to prevent double loops,
-          // we will call the internal logic directly: reuse the same frame updates as in your non-module animate
-          // Instead of trying to introspect that function, we can just allow the existing animate (requestAnimationFrame) to run as fallback on non-VR,
-          // and here call renderer.render(scene, camera) to render VR frames. Game logic (movement, collisions) also runs in the other loop,
-          // but to ensure game logic runs while in VR, we'll call a tick function used by animate. Since there's no separate tick, we call renderer.render only.
-          renderer.render(scene, camera);
-        });
-
-        return true;
-      }
-      return false;
+    // 2. Conectar tu botón "Comenzar" del menú HTML
+    // CAMBIO IMPORTANTE: Usamos 'botonInicio' en lugar de 'startBtn' para evitar el error
+    const botonInicio = document.getElementById('start-btn');
+    
+    // Guardamos la función original (startGame) que tenía el botón
+    const originalStart = botonInicio.onclick;
+    
+    // Sobrescribimos el clic para que inicie el juego Y entre a VR
+    botonInicio.onclick = (e) => {
+        // Ejecutar la lógica original del juego (quitar menú, iniciar música, etc.)
+        if (window.startGame) window.startGame();
+        
+        // Intentar entrar a VR automáticamente
+        vrBtn.click();
     };
 
-    // Poll until player exists, up to some retries
-    let tries = 0;
-    const poll = setInterval(() => {
-      tries++;
-      if (tryAttachCamera() || tries > 50) clearInterval(poll);
-    }, 200);
+    // Botón fallback para pruebas en PC (opcional)
+    const fallbackBtn = document.getElementById('enter-vr-fallback');
+    if(fallbackBtn) {
+        fallbackBtn.style.display = 'block';
+        fallbackBtn.onclick = () => vrBtn.click();
+    }
+
+    // 3. Manejo de la Cámara al entrar/salir de VR
+    window.renderer.xr.addEventListener('sessionstart', () => {
+        // Asegurar que el juego inició si entraron por otro medio
+        if (!window.gameStarted && window.startGame) window.startGame();
+
+        if (window.player && window.camera) {
+            // A. Poner cámara en primera persona (hija del jugador)
+            window.player.add(window.camera);
+            window.camera.position.set(0, 0, 0); 
+            window.camera.rotation.set(0, 0, 0);
+
+            // B. Ocultar modelo del jugador para no bloquear la vista
+            window.player.traverse(obj => {
+                if (obj.isMesh) {
+                    obj.userData._origVis = obj.visible;
+                    obj.visible = false; 
+                }
+            });
+        }
+    });
+
+    window.renderer.xr.addEventListener('sessionend', () => {
+        if (window.player && window.camera) {
+            // Restaurar cámara y visibilidad al salir
+            window.scene.add(window.camera);
+            
+            window.player.traverse(obj => {
+                if (obj.isMesh && obj.userData._origVis !== undefined) {
+                    obj.visible = obj.userData._origVis;
+                }
+            });
+            
+            window.camera.position.set(0, 12, 16);
+            window.camera.lookAt(0,0,0);
+        }
+    });
+
+    // 4. Controles VR (Gatillos para avanzar)
+    const controller1 = window.renderer.xr.getController(0);
+    controller1.addEventListener('selectstart', () => {
+        window.handleMove && window.handleMove('KeyW');
+    });
+    window.scene.add(controller1);
+
+    const controller2 = window.renderer.xr.getController(1);
+    controller2.addEventListener('selectstart', () => {
+        window.handleMove && window.handleMove('KeyW');
+    });
+    window.scene.add(controller2);
+
   </script>
 </body>
 </html>
