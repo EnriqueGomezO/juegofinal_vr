@@ -266,29 +266,26 @@
         texture.mapping = THREE.EquirectangularReflectionMapping;
         scene.background = texture;
         scene.environment = texture;
+        
+        // Actualizar materiales
         Object.values(materials).forEach(mat => {
-          if (mat.isMeshStandardMaterial || mat.isMeshPhysicalMaterial) {
-            mat.envMap = texture;
+            if (mat.envMap !== undefined) mat.envMap = texture;
             mat.needsUpdate = true;
-          }
         });
+
         const pmremGenerator = new THREE.PMREMGenerator(renderer);
         pmremGenerator.compileEquirectangularShader();
         const envMap = pmremGenerator.fromEquirectangular(texture).texture;
         scene.environment = envMap;
         pmremGenerator.dispose();
-        onModelLoaded();
+        
+        onModelLoaded(); // <--- Carga completa
       },
-      (progress) => {
-        if (progress.total > 0) {
-          const percent = (progress.loaded / progress.total) * 100;
-          console.log(`HDR loading: ${percent.toFixed(0)}%`);
-        }
-      },
+      undefined, // Sin progreso parcial
       (error) => {
-        console.warn('HDR environment not found, using fallback sky color');
+        console.warn('HDR failed, using color fallback');
         scene.background = new THREE.Color(0x87CEEB);
-        onModelLoaded();
+        onModelLoaded(); // Aun con error, avisamos que "terminamos"
       }
     );
   }
@@ -304,22 +301,25 @@
       { path: 'Models/coupe_car.glb', scale: 1.0, rotation: 0 }
     ];
     
-    carConfigs.forEach((config, index) => {
+    // 1. Cargar Coches
+    carConfigs.forEach((config) => {
       gltfLoader.load(
         config.path,
         (gltf) => {
-          // ... (Toda tu lógica de configuración del modelo sigue igual aquí) ...
           const model = gltf.scene;
           const box = new THREE.Box3().setFromObject(model);
           const size = box.getSize(new THREE.Vector3());
           const maxDim = Math.max(size.x, size.y, size.z);
-          const targetSize = 2.0;
+          const targetSize = 2.0; 
           const normalizeScale = targetSize / maxDim;
           model.scale.set(normalizeScale, normalizeScale, normalizeScale);
           if (config.rotation !== 0) model.rotation.y = config.rotation;
-          box.setFromObject(model);
-          const center = box.getCenter(new THREE.Vector3());
+          
+          // Re-centrar
+          const finalBox = new THREE.Box3().setFromObject(model);
+          const center = finalBox.getCenter(new THREE.Vector3());
           model.position.set(-center.x, 0, -center.z);
+
           const wrapper = new THREE.Group();
           wrapper.add(model);
           wrapper.traverse((child) => {
@@ -327,59 +327,48 @@
           });
           carModels.push(wrapper);
           
-          // LLAMADA CORREGIDA: Solo avisamos cuando termina
+          // AVISAR QUE TERMINÓ ESTE COCHE
           onModelLoaded();
         },
-        // ELIMINAMOS EL CALLBACK DE PROGRESO QUE CAUSABA EL 2000%
-        undefined, 
+        undefined, // <--- IMPORTANTE: Sin callback de progreso para evitar el 2000%
         (error) => {
           console.error(`Error loading ${config.path}:`, error);
-          const fallbackCar = createFallbackCar();
-          carModels.push(fallbackCar);
-          onModelLoaded();
+          carModels.push(createFallbackCar());
+          onModelLoaded(); // Contamos el error como cargado para no bloquear el juego
         }
       );
     });
 
-    // Load player model
+    // 2. Cargar Jugador (FBX)
     fbxLoader.load(
       'Models/Taunt.fbx',
       (fbx) => {
         playerModel = fbx;
         playerModel.scale.set(0.01, 0.01, 0.01);
-        playerModel.position.set(0, 0, 0);
         playerModel.traverse((child) => {
-          if (child.isMesh) {
-            child.castShadow = true;
-            child.receiveShadow = true;
-          }
+          if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; }
         });
+
+        // Configurar animaciones
         mixer = new THREE.AnimationMixer(playerModel);
-        if (fbx.animations && fbx.animations.length > 0) {
+        if (fbx.animations.length > 0) {
           animations.idle = mixer.clipAction(fbx.animations[0]);
           animations.idle.setLoop(THREE.LoopRepeat);
         }
+
+        // Cargar animaciones extra en cadena
         fbxLoader.load('Models/reposo.fbx', (anim) => {
-          if (anim.animations && anim.animations.length > 0) {
-            animations.idle = mixer.clipAction(anim.animations[0]);
-            animations.idle.setLoop(THREE.LoopRepeat);
-          }
-          loadRunAnimation(fbxLoader);
-        }, undefined, (error) => {
-          loadRunAnimation(fbxLoader);
-        });
+            if (anim.animations.length) animations.idle = mixer.clipAction(anim.animations[0]);
+            loadRunAnimation(fbxLoader);
+        }, undefined, () => loadRunAnimation(fbxLoader));
       },
-      (progress) => {
-        if (progress.total > 0) {
-          const percent = (progress.loaded / progress.total) * 100;
-          updateLoadingProgress(3, percent / totalModels);
-        }
-      },
+      undefined, // <--- IMPORTANTE: Aquí eliminamos el cálculo matemático que causaba el error
       (error) => {
-        console.error('Error loading player model:', error);
-        const geometry = new THREE.BoxGeometry(1, 1.5, 0.8);
-        const material = new THREE.MeshStandardMaterial({ color: 0x22c55e });
-        playerModel = new THREE.Mesh(geometry, material);
+        console.error('Error loading player:', error);
+        // Fallback simple si falla el modelo
+        const geo = new THREE.BoxGeometry(1, 1.5, 0.8);
+        const mat = new THREE.MeshStandardMaterial({ color: 0x22c55e });
+        playerModel = new THREE.Mesh(geo, mat);
         playerModel.castShadow = true;
         mixer = new THREE.AnimationMixer(playerModel);
         onModelLoaded();
@@ -428,19 +417,26 @@
     return group;
   }
 
+  // ============ LOGICA DE CARGA CORREGIDA ============
   function onModelLoaded() {
     loadedCount++;
-    const progress = loadedCount / totalModels;
-    updateLoadingProgress(loadedCount - 1, progress);
+    updateLoadingProgress();
+    
+    // Si ya cargamos todo (5 de 5), finalizamos
     if (loadedCount >= totalModels) {
       finishLoading();
     }
   }
 
-  function updateLoadingProgress(index, ratio) {
-    const percent = Math.round(ratio * 100);
-    loadingText.querySelector('span').textContent = `${percent}%`;
-    bar.style.width = percent + '%';
+  function updateLoadingProgress() {
+    // Cálculo simple: (Cargados / Total) * 100
+    // Usamos Math.min para asegurar que nunca pase de 100% visualmente
+    const percent = Math.min(100, Math.round((loadedCount / totalModels) * 100));
+    
+    const span = loadingText.querySelector('span');
+    if (span) span.textContent = `${percent}%`;
+    
+    if (bar) bar.style.width = `${percent}%`;
   }
 
   function finishLoading() {
