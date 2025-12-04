@@ -255,6 +255,12 @@
 
     // Esto maneja el bucle tanto en PC como en VR automáticamente
     renderer.setAnimationLoop(animate);
+
+    // Hacemos accesibles las variables vitales para el script de VR
+    window.scene = scene;
+    window.camera = camera;
+    window.renderer = renderer;
+    window.startGame = startGame;
   }
 
   // ============ HDR ENVIRONMENT LOADING ============
@@ -446,6 +452,8 @@
       player.add(playerModel);
       player.position.set(0, 0, 0);
       scene.add(player);
+
+      window.player = player; // Importante para que la cámara VR sepa a quién seguir
 
       // ---- VR: place camera in first-person relative to player ----
       // camera will be re-parented to player later in module script to keep references intact
