@@ -252,6 +252,9 @@
     // Start button
     startBtn.onclick = startGame;
     retryBtn.onclick = () => location.reload();
+
+    // Esto maneja el bucle tanto en PC como en VR automáticamente
+    renderer.setAnimationLoop(animate);
   }
 
   // ============ HDR ENVIRONMENT LOADING ============
@@ -305,6 +308,7 @@
       gltfLoader.load(
         config.path,
         (gltf) => {
+          // ... (Toda tu lógica de configuración del modelo sigue igual aquí) ...
           const model = gltf.scene;
           const box = new THREE.Box3().setFromObject(model);
           const size = box.getSize(new THREE.Vector3());
@@ -322,14 +326,12 @@
             if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; }
           });
           carModels.push(wrapper);
+          
+          // LLAMADA CORREGIDA: Solo avisamos cuando termina
           onModelLoaded();
         },
-        (progress) => {
-          if (progress.total > 0) {
-            const percent = (progress.loaded / progress.total) * 100;
-            updateLoadingProgress(index, percent / carConfigs.length);
-          }
-        },
+        // ELIMINAMOS EL CALLBACK DE PROGRESO QUE CAUSABA EL 2000%
+        undefined, 
         (error) => {
           console.error(`Error loading ${config.path}:`, error);
           const fallbackCar = createFallbackCar();
@@ -473,7 +475,7 @@
       segments.push(seg);
     }
     // Switch animate loop to renderer.setAnimationLoop (done already in module script)
-    animate(); // call once to ensure loop running on non-VR contexts
+    //animate(); // call once to ensure loop running on non-VR contexts
   }
 
   // ============ SEGMENT GENERATION ============
@@ -588,25 +590,40 @@
   }
 
   // ============ GAME LOOP ============
+  // ============ GAME LOOP (CORREGIDO) ============
   function animate() {
-    // keep compatibility with non-VR (will be wrapped by setAnimationLoop in module script)
-    requestAnimationFrame(animate);
+    // NOTA IMPORTANTE: Aquí eliminamos 'requestAnimationFrame(animate)'
+    // porque ahora lo manejará 'renderer.setAnimationLoop' desde init()
+
     const dt = clock.getDelta();
+    
+    // 1. Actualizar animaciones del modelo (FBX)
     if (mixer) mixer.update(dt);
+
+    // 2. Lógica de movimiento del Jugador (Interpolación suave)
     if (isMoving && player) {
       const elapsed = performance.now() - moveStart;
       const duration = CONFIG.player.speed * 1000;
       const t = Math.min(1, elapsed / duration);
+      
+      // Función de easing para salto suave
       const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+
       player.position.lerpVectors(moveFrom, moveTo, ease);
-      player.position.y = Math.sin(t * Math.PI) * 0.2;
+      player.position.y = Math.sin(t * Math.PI) * 0.2; // Arco del salto
+
+      // Rotación suave hacia la dirección del movimiento
       if (player.userData.rotAnim) {
         const { start, diff } = player.userData.rotAnim;
         player.rotation.y = start + diff * ease;
       }
+
+      // Al terminar el movimiento
       if (t >= 1) {
         isMoving = false;
         player.position.y = 0;
+        
+        // Volver a animación Idle
         if (animations.idle) {
           if (currentAction !== animations.idle) {
             if (currentAction) currentAction.fadeOut(0.3);
@@ -614,6 +631,8 @@
             currentAction.reset().fadeIn(0.3).play();
           }
         }
+        
+        // Actualizar puntuación si avanzó
         if (moveTo.z < moveFrom.z) {
           distance += 1;
           score += CONFIG.pointsPerMove;
@@ -624,27 +643,37 @@
         refreshSegments();
       }
     }
+
+    // 3. Mover obstáculos (Coches)
     for (const o of obstacles) {
       if (!o.userData || o.userData.type !== 'car') continue;
       const dir = o.userData.dir || 1;
       const speed = o.userData.speed || 2.0;
       o.position.x += dir * speed * dt;
+      
       const maxX = (CONFIG.lanes / 2) * CONFIG.laneWidth + 5;
+      
+      // Resetear posición si sale de pantalla (loop infinito de coches)
       if (o.position.x > maxX) o.position.x = -maxX;
       if (o.position.x < -maxX) o.position.x = maxX;
     }
+
+    // 4. Checar colisiones
     checkCollisions();
+
+    // 5. Lógica de Cámara (IMPORTANTE PARA VR)
     if (player) {
-      // In VR the camera is attached to player; when not in VR we mimic earlier camera-follow
+      // Si NO estamos en VR, la cámara sigue al jugador suavemente desde arriba
       if (!renderer.xr.isPresenting) {
         const targetCam = new THREE.Vector3(player.position.x * 0.3, 12, player.position.z + 16);
         camera.position.lerp(targetCam, 0.1);
         camera.lookAt(player.position.x * 0.2, 0, player.position.z - 3);
-      } else {
-        // when in VR, keep player's position (player group) as base and camera controlled by headset pose
-        // we still want the player's group to be at player's position (already updated by movement)
-      }
+      } 
+      // Si estamos en VR, NO movemos la cámara aquí. 
+      // En VR la cámara la mueven las gafas y está pegada al jugador por el código del módulo.
     }
+
+    // 6. Renderizar escena
     renderer.render(scene, camera);
   }
 
